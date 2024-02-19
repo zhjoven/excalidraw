@@ -17,7 +17,7 @@ import {
   getOriginalContainerHeightFromCache,
   resetOriginalContainerCache,
   updateOriginalContainerCache,
-} from "../element/textWysiwyg";
+} from "../element/containerCache";
 import {
   hasBoundTextElement,
   isTextBindableContainer,
@@ -45,8 +45,9 @@ export const actionUnbindText = register({
   },
   perform: (elements, appState, _, app) => {
     const selectedElements = app.scene.getSelectedElements(appState);
+    const elementsMap = app.scene.getNonDeletedElementsMap();
     selectedElements.forEach((element) => {
-      const boundTextElement = getBoundTextElement(element);
+      const boundTextElement = getBoundTextElement(element, elementsMap);
       if (boundTextElement) {
         const { width, height, baseline } = measureText(
           boundTextElement.originalText,
@@ -57,7 +58,11 @@ export const actionUnbindText = register({
           element.id,
         );
         resetOriginalContainerCache(element.id);
-        const { x, y } = computeBoundTextPosition(element, boundTextElement);
+        const { x, y } = computeBoundTextPosition(
+          element,
+          boundTextElement,
+          elementsMap,
+        );
         mutateElement(boundTextElement as ExcalidrawTextElement, {
           containerId: null,
           width,
@@ -106,7 +111,10 @@ export const actionBindText = register({
       if (
         textElement &&
         bindingContainer &&
-        getBoundTextElement(bindingContainer) === null
+        getBoundTextElement(
+          bindingContainer,
+          app.scene.getNonDeletedElementsMap(),
+        ) === null
       ) {
         return true;
       }
@@ -141,7 +149,11 @@ export const actionBindText = register({
       }),
     });
     const originalContainerHeight = container.height;
-    redrawTextBoundingBox(textElement, container);
+    redrawTextBoundingBox(
+      textElement,
+      container,
+      app.scene.getNonDeletedElementsMap(),
+    );
     // overwritting the cache with original container height so
     // it can be restored when unbind
     updateOriginalContainerCache(container.id, originalContainerHeight);
@@ -282,7 +294,11 @@ export const actionWrapTextInContainer = register({
           },
           false,
         );
-        redrawTextBoundingBox(textElement, container);
+        redrawTextBoundingBox(
+          textElement,
+          container,
+          app.scene.getNonDeletedElementsMap(),
+        );
 
         updatedElements = pushContainerBelowText(
           [...updatedElements, container],

@@ -17,6 +17,7 @@ import {
   GroupId,
   ExcalidrawBindableElement,
   ExcalidrawFrameLikeElement,
+  ElementsMap,
 } from "../element/types";
 import {
   getElementAbsoluteCoords,
@@ -33,6 +34,7 @@ import {
   SVGRenderConfig,
   StaticCanvasRenderConfig,
   StaticSceneRenderConfig,
+  RenderableElementsMap,
 } from "../scene/types";
 import {
   getScrollBars,
@@ -61,9 +63,13 @@ import {
   TransformHandles,
   TransformHandleType,
 } from "../element/transformHandles";
-import { throttleRAF } from "../utils";
+import { arrayToMap, throttleRAF } from "../utils";
 import { UserIdleState } from "../types";
-import { FRAME_STYLE, THEME_FILTER } from "../constants";
+import {
+  DEFAULT_TRANSFORM_HANDLE_SPACING,
+  FRAME_STYLE,
+  THEME_FILTER,
+} from "../constants";
 import {
   EXTERNAL_LINK_IMG,
   getLinkHandleFromCoords,
@@ -75,18 +81,12 @@ import {
   isIframeLikeElement,
   isLinearElement,
 } from "../element/typeChecks";
-import {
-  isIframeLikeOrItsLabel,
-  createPlaceholderEmbeddableLabel,
-} from "../element/embeddable";
+import { createPlaceholderEmbeddableLabel } from "../element/embeddable";
 import {
   elementOverlapsWithFrame,
   getTargetFrame,
   isElementInFrame,
 } from "../frame";
-import "canvas-roundrect-polyfill";
-
-export const DEFAULT_SPACING = 2;
 
 const strokeRectWithRotation = (
   context: CanvasRenderingContext2D,
@@ -249,6 +249,7 @@ const renderLinearPointHandles = (
   context: CanvasRenderingContext2D,
   appState: InteractiveCanvasAppState,
   element: NonDeleted<ExcalidrawLinearElement>,
+  elementsMap: RenderableElementsMap,
 ) => {
   if (!appState.selectedLinearElement) {
     return;
@@ -256,7 +257,10 @@ const renderLinearPointHandles = (
   context.save();
   context.translate(appState.scrollX, appState.scrollY);
   context.lineWidth = 1 / appState.zoom.value;
-  const points = LinearElementEditor.getPointsGlobalCoordinates(element);
+  const points = LinearElementEditor.getPointsGlobalCoordinates(
+    element,
+    elementsMap,
+  );
 
   const { POINT_HANDLE_SIZE } = LinearElementEditor;
   const radius = appState.editingLinearElement
@@ -272,6 +276,7 @@ const renderLinearPointHandles = (
   //Rendering segment mid points
   const midPoints = LinearElementEditor.getEditorMidPoints(
     element,
+    elementsMap,
     appState,
   ).filter((midPoint) => midPoint !== null) as Point[];
 
@@ -339,6 +344,7 @@ const highlightPoint = (
 const renderLinearElementPointHighlight = (
   context: CanvasRenderingContext2D,
   appState: InteractiveCanvasAppState,
+  elementsMap: ElementsMap,
 ) => {
   const { elementId, hoverPointIndex } = appState.selectedLinearElement!;
   if (
@@ -348,13 +354,15 @@ const renderLinearElementPointHighlight = (
   ) {
     return;
   }
-  const element = LinearElementEditor.getElement(elementId);
+  const element = LinearElementEditor.getElement(elementId, elementsMap);
+
   if (!element) {
     return;
   }
   const point = LinearElementEditor.getPointAtIndexGlobalCoordinates(
     element,
     hoverPointIndex,
+    elementsMap,
   );
   context.save();
   context.translate(appState.scrollX, appState.scrollY);
@@ -446,7 +454,7 @@ const bootstrapCanvas = ({
 
 const _renderInteractiveScene = ({
   canvas,
-  elements,
+  elementsMap,
   visibleElements,
   selectedElements,
   scale,
@@ -454,7 +462,7 @@ const _renderInteractiveScene = ({
   renderConfig,
 }: InteractiveSceneRenderConfig) => {
   if (canvas === null) {
-    return { atLeastOneVisibleElement: false, elements };
+    return { atLeastOneVisibleElement: false, elementsMap };
   }
 
   const [normalizedWidth, normalizedHeight] = getNormalizedCanvasDimensions(
@@ -488,7 +496,12 @@ const _renderInteractiveScene = ({
   });
 
   if (editingLinearElement) {
-    renderLinearPointHandles(context, appState, editingLinearElement);
+    renderLinearPointHandles(
+      context,
+      appState,
+      editingLinearElement,
+      elementsMap,
+    );
   }
 
   // Paint selection element
@@ -504,12 +517,22 @@ const _renderInteractiveScene = ({
     appState.suggestedBindings
       .filter((binding) => binding != null)
       .forEach((suggestedBinding) => {
-        renderBindingHighlight(context, appState, suggestedBinding!);
+        renderBindingHighlight(
+          context,
+          appState,
+          suggestedBinding!,
+          elementsMap,
+        );
       });
   }
 
   if (appState.frameToHighlight) {
-    renderFrameHighlight(context, appState, appState.frameToHighlight);
+    renderFrameHighlight(
+      context,
+      appState,
+      appState.frameToHighlight,
+      elementsMap,
+    );
   }
 
   if (appState.elementsToHighlight) {
@@ -531,6 +554,7 @@ const _renderInteractiveScene = ({
       context,
       appState,
       selectedElements[0] as NonDeleted<ExcalidrawLinearElement>,
+      elementsMap,
     );
   }
 
@@ -538,7 +562,7 @@ const _renderInteractiveScene = ({
     appState.selectedLinearElement &&
     appState.selectedLinearElement.hoverPointIndex >= 0
   ) {
-    renderLinearElementPointHighlight(context, appState);
+    renderLinearElementPointHighlight(context, appState, elementsMap);
   }
   // Paint selected elements
   if (!appState.multiElement && !appState.editingLinearElement) {
@@ -556,81 +580,71 @@ const _renderInteractiveScene = ({
         context,
         appState,
         selectedElements[0] as ExcalidrawLinearElement,
+        elementsMap,
       );
     }
     const selectionColor = renderConfig.selectionColor || oc.black;
 
     if (showBoundingBox) {
       // Optimisation for finding quickly relevant element ids
-      const locallySelectedIds = selectedElements.reduce(
-        (acc: Record<string, boolean>, element) => {
-          acc[element.id] = true;
-          return acc;
-        },
-        {},
-      );
+      const locallySelectedIds = arrayToMap(selectedElements);
 
-      const selections = elements.reduce(
-        (
-          acc: {
-            angle: number;
-            elementX1: number;
-            elementY1: number;
-            elementX2: number;
-            elementY2: number;
-            selectionColors: string[];
-            dashed?: boolean;
-            cx: number;
-            cy: number;
-            activeEmbeddable: boolean;
-          }[],
-          element,
-        ) => {
-          const selectionColors = [];
-          // local user
-          if (
-            locallySelectedIds[element.id] &&
-            !isSelectedViaGroup(appState, element)
-          ) {
-            selectionColors.push(selectionColor);
-          }
-          // remote users
-          if (renderConfig.remoteSelectedElementIds[element.id]) {
-            selectionColors.push(
-              ...renderConfig.remoteSelectedElementIds[element.id].map(
-                (socketId: string) => {
-                  const background = getClientColor(socketId);
-                  return background;
-                },
-              ),
-            );
-          }
+      const selections: {
+        angle: number;
+        elementX1: number;
+        elementY1: number;
+        elementX2: number;
+        elementY2: number;
+        selectionColors: string[];
+        dashed?: boolean;
+        cx: number;
+        cy: number;
+        activeEmbeddable: boolean;
+      }[] = [];
 
-          if (selectionColors.length) {
-            const [elementX1, elementY1, elementX2, elementY2, cx, cy] =
-              getElementAbsoluteCoords(element, true);
-            acc.push({
-              angle: element.angle,
-              elementX1,
-              elementY1,
-              elementX2,
-              elementY2,
-              selectionColors,
-              dashed: !!renderConfig.remoteSelectedElementIds[element.id],
-              cx,
-              cy,
-              activeEmbeddable:
-                appState.activeEmbeddable?.element === element &&
-                appState.activeEmbeddable.state === "active",
-            });
-          }
-          return acc;
-        },
-        [],
-      );
+      for (const element of elementsMap.values()) {
+        const selectionColors = [];
+        // local user
+        if (
+          locallySelectedIds.has(element.id) &&
+          !isSelectedViaGroup(appState, element)
+        ) {
+          selectionColors.push(selectionColor);
+        }
+        // remote users
+        if (renderConfig.remoteSelectedElementIds[element.id]) {
+          selectionColors.push(
+            ...renderConfig.remoteSelectedElementIds[element.id].map(
+              (socketId: string) => {
+                const background = getClientColor(socketId);
+                return background;
+              },
+            ),
+          );
+        }
+
+        if (selectionColors.length) {
+          const [elementX1, elementY1, elementX2, elementY2, cx, cy] =
+            getElementAbsoluteCoords(element, elementsMap, true);
+          selections.push({
+            angle: element.angle,
+            elementX1,
+            elementY1,
+            elementX2,
+            elementY2,
+            selectionColors,
+            dashed: !!renderConfig.remoteSelectedElementIds[element.id],
+            cx,
+            cy,
+            activeEmbeddable:
+              appState.activeEmbeddable?.element === element &&
+              appState.activeEmbeddable.state === "active",
+          });
+        }
+      }
 
       const addSelectionForGroupId = (groupId: GroupId) => {
-        const groupElements = getElementsInGroup(elements, groupId);
+        const groupElements = getElementsInGroup(elementsMap, groupId);
         const [elementX1, elementY1, elementX2, elementY2] =
           getCommonBounds(groupElements);
         selections.push({
@@ -669,7 +683,8 @@ const _renderInteractiveScene = ({
       const transformHandles = getTransformHandles(
         selectedElements[0],
         appState.zoom,
-        "mouse", // when we render we don't know which pointer type so use mouse
+        elementsMap,
+        "mouse", // when we render we don't know which pointer type so use mouse,
       );
       if (!appState.viewModeEnabled && showBoundingBox) {
         renderTransformHandles(
@@ -681,7 +696,8 @@ const _renderInteractiveScene = ({
         );
       }
     } else if (selectedElements.length > 1 && !appState.isRotating) {
-      const dashedLinePadding = (DEFAULT_SPACING * 2) / appState.zoom.value;
+      const dashedLinePadding =
+        (DEFAULT_TRANSFORM_HANDLE_SPACING * 2) / appState.zoom.value;
       context.fillStyle = oc.white;
       const [x1, y1, x2, y2] = getCommonBounds(selectedElements);
       const initialLineDash = context.getLineDash();
@@ -870,7 +886,7 @@ const _renderInteractiveScene = ({
   let scrollBars;
   if (renderConfig.renderScrollbars) {
     scrollBars = getScrollBars(
-      elements,
+      elementsMap,
       normalizedWidth,
       normalizedHeight,
       appState,
@@ -897,14 +913,15 @@ const _renderInteractiveScene = ({
   return {
     scrollBars,
     atLeastOneVisibleElement: visibleElements.length > 0,
-    elements,
+    elementsMap,
   };
 };
 
 const _renderStaticScene = ({
   canvas,
   rc,
-  elements,
+  elementsMap,
+  allElementsMap,
   visibleElements,
   scale,
   appState,
@@ -954,7 +971,11 @@ const _renderStaticScene = ({
       element.groupIds.length > 0 &&
       appState.frameToHighlight &&
       appState.selectedElementIds[element.id] &&
-      (elementOverlapsWithFrame(element, appState.frameToHighlight) ||
+      (elementOverlapsWithFrame(
+        element,
+        appState.frameToHighlight,
+        elementsMap,
+      ) ||
         element.groupIds.find((groupId) => groupsToBeAddedToFrame.has(groupId)))
     ) {
       element.groupIds.forEach((groupId) =>
@@ -965,7 +986,7 @@ const _renderStaticScene = ({
 
   // Paint visible elements
   visibleElements
-    .filter((el) => !isIframeLikeOrItsLabel(el))
+    .filter((el) => !isIframeLikeElement(el))
     .forEach((element) => {
       try {
         const frameId = element.frameId || appState.frameToHighlight?.id;
@@ -977,19 +998,35 @@ const _renderStaticScene = ({
         ) {
           context.save();
 
-          const frame = getTargetFrame(element, appState);
+          const frame = getTargetFrame(element, elementsMap, appState);
 
           // TODO do we need to check isElementInFrame here?
-          if (frame && isElementInFrame(element, elements, appState)) {
+          if (frame && isElementInFrame(element, elementsMap, appState)) {
             frameClip(frame, context, renderConfig, appState);
           }
-          renderElement(element, rc, context, renderConfig, appState);
+          renderElement(
+            element,
+            elementsMap,
+            allElementsMap,
+            rc,
+            context,
+            renderConfig,
+            appState,
+          );
           context.restore();
         } else {
-          renderElement(element, rc, context, renderConfig, appState);
+          renderElement(
+            element,
+            elementsMap,
+            allElementsMap,
+            rc,
+            context,
+            renderConfig,
+            appState,
+          );
         }
         if (!isExporting) {
-          renderLinkIcon(element, context, appState);
+          renderLinkIcon(element, context, appState, elementsMap);
         }
       } catch (error: any) {
         console.error(error);
@@ -998,11 +1035,19 @@ const _renderStaticScene = ({
 
   // render embeddables on top
   visibleElements
-    .filter((el) => isIframeLikeOrItsLabel(el))
+    .filter((el) => isIframeLikeElement(el))
     .forEach((element) => {
       try {
         const render = () => {
-          renderElement(element, rc, context, renderConfig, appState);
+          renderElement(
+            element,
+            elementsMap,
+            allElementsMap,
+            rc,
+            context,
+            renderConfig,
+            appState,
+          );
 
           if (
             isIframeLikeElement(element) &&
@@ -1014,10 +1059,18 @@ const _renderStaticScene = ({
             element.height
           ) {
             const label = createPlaceholderEmbeddableLabel(element);
-            renderElement(label, rc, context, renderConfig, appState);
+            renderElement(
+              label,
+              elementsMap,
+              allElementsMap,
+              rc,
+              context,
+              renderConfig,
+              appState,
+            );
           }
           if (!isExporting) {
-            renderLinkIcon(element, context, appState);
+            renderLinkIcon(element, context, appState, elementsMap);
           }
         };
         // - when exporting the whole canvas, we DO NOT apply clipping
@@ -1032,9 +1085,9 @@ const _renderStaticScene = ({
         ) {
           context.save();
 
-          const frame = getTargetFrame(element, appState);
+          const frame = getTargetFrame(element, elementsMap, appState);
 
-          if (frame && isElementInFrame(element, elements, appState)) {
+          if (frame && isElementInFrame(element, elementsMap, appState)) {
             frameClip(frame, context, renderConfig, appState);
           }
           render();
@@ -1163,7 +1216,7 @@ const renderSelectionBorder = (
     cy: number;
     activeEmbeddable: boolean;
   },
-  padding = DEFAULT_SPACING * 2,
+  padding = DEFAULT_TRANSFORM_HANDLE_SPACING * 2,
 ) => {
   const {
     angle,
@@ -1216,6 +1269,7 @@ const renderBindingHighlight = (
   context: CanvasRenderingContext2D,
   appState: InteractiveCanvasAppState,
   suggestedBinding: SuggestedBinding,
+  elementsMap: ElementsMap,
 ) => {
   const renderHighlight = Array.isArray(suggestedBinding)
     ? renderBindingHighlightForSuggestedPointBinding
@@ -1223,7 +1277,7 @@ const renderBindingHighlight = (
 
   context.save();
   context.translate(appState.scrollX, appState.scrollY);
-  renderHighlight(context, suggestedBinding as any);
+  renderHighlight(context, suggestedBinding as any, elementsMap);
 
   context.restore();
 };
@@ -1231,8 +1285,9 @@ const renderBindingHighlight = (
 const renderBindingHighlightForBindableElement = (
   context: CanvasRenderingContext2D,
   element: ExcalidrawBindableElement,
+  elementsMap: ElementsMap,
 ) => {
-  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element, elementsMap);
   const width = x2 - x1;
   const height = y2 - y1;
   const threshold = maxBindingGap(element, width, height);
@@ -1292,8 +1347,9 @@ const renderFrameHighlight = (
   context: CanvasRenderingContext2D,
   appState: InteractiveCanvasAppState,
   frame: NonDeleted<ExcalidrawFrameLikeElement>,
+  elementsMap: ElementsMap,
 ) => {
-  const [x1, y1, x2, y2] = getElementAbsoluteCoords(frame);
+  const [x1, y1, x2, y2] = getElementAbsoluteCoords(frame, elementsMap);
   const width = x2 - x1;
   const height = y2 - y1;
 
@@ -1367,6 +1423,7 @@ const renderElementsBoxHighlight = (
 const renderBindingHighlightForSuggestedPointBinding = (
   context: CanvasRenderingContext2D,
   suggestedBinding: SuggestedPointBinding,
+  elementsMap: ElementsMap,
 ) => {
   const [element, startOrEnd, bindableElement] = suggestedBinding;
 
@@ -1385,6 +1442,7 @@ const renderBindingHighlightForSuggestedPointBinding = (
     const [x, y] = LinearElementEditor.getPointAtIndexGlobalCoordinates(
       element,
       index,
+      elementsMap,
     );
     fillCircle(context, x, y, threshold);
   });
@@ -1395,9 +1453,10 @@ const renderLinkIcon = (
   element: NonDeletedExcalidrawElement,
   context: CanvasRenderingContext2D,
   appState: StaticCanvasAppState,
+  elementsMap: ElementsMap,
 ) => {
   if (element.link && !appState.selectedElementIds[element.id]) {
-    const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+    const [x1, y1, x2, y2] = getElementAbsoluteCoords(element, elementsMap);
     const [x, y, width, height] = getLinkHandleFromCoords(
       [x1, y1, x2, y2],
       element.angle,
@@ -1448,6 +1507,7 @@ const renderLinkIcon = (
 // This should be only called for exporting purposes
 export const renderSceneToSvg = (
   elements: readonly NonDeletedExcalidrawElement[],
+  elementsMap: RenderableElementsMap,
   rsvg: RoughSVG,
   svgRoot: SVGElement,
   files: BinaryFiles,
@@ -1459,12 +1519,13 @@ export const renderSceneToSvg = (
 
   // render elements
   elements
-    .filter((el) => !isIframeLikeOrItsLabel(el))
+    .filter((el) => !isIframeLikeElement(el))
     .forEach((element) => {
       if (!element.isDeleted) {
         try {
           renderElementToSvg(
             element,
+            elementsMap,
             rsvg,
             svgRoot,
             files,
@@ -1486,6 +1547,7 @@ export const renderSceneToSvg = (
         try {
           renderElementToSvg(
             element,
+            elementsMap,
             rsvg,
             svgRoot,
             files,

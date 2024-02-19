@@ -1,4 +1,6 @@
 import {
+  ElementsMap,
+  ElementsMapOrArray,
   ExcalidrawElement,
   NonDeletedExcalidrawElement,
 } from "../element/types";
@@ -43,10 +45,11 @@ export const excludeElementsInFramesFromSelection = <
 export const getElementsWithinSelection = (
   elements: readonly NonDeletedExcalidrawElement[],
   selection: NonDeletedExcalidrawElement,
+  elementsMap: ElementsMap,
   excludeElementsInFrames: boolean = true,
 ) => {
   const [selectionX1, selectionY1, selectionX2, selectionY2] =
-    getElementAbsoluteCoords(selection);
+    getElementAbsoluteCoords(selection, elementsMap);
 
   let elementsInSelection = elements.filter((element) => {
     let [elementX1, elementY1, elementX2, elementY2] =
@@ -81,7 +84,7 @@ export const getElementsWithinSelection = (
     const containingFrame = getContainingFrame(element);
 
     if (containingFrame) {
-      return elementOverlapsWithFrame(element, containingFrame);
+      return elementOverlapsWithFrame(element, containingFrame, elementsMap);
     }
 
     return true;
@@ -166,26 +169,28 @@ export const getCommonAttributeOfSelectedElements = <T>(
 };
 
 export const getSelectedElements = (
-  elements: readonly NonDeletedExcalidrawElement[],
+  elements: ElementsMapOrArray,
   appState: Pick<InteractiveCanvasAppState, "selectedElementIds">,
   opts?: {
     includeBoundTextElement?: boolean;
     includeElementsInFrames?: boolean;
   },
 ) => {
-  const selectedElements = elements.filter((element) => {
+  const selectedElements: ExcalidrawElement[] = [];
+  for (const element of elements.values()) {
     if (appState.selectedElementIds[element.id]) {
-      return element;
+      selectedElements.push(element);
+      continue;
     }
     if (
       opts?.includeBoundTextElement &&
       isBoundToContainer(element) &&
       appState.selectedElementIds[element?.containerId]
     ) {
-      return element;
+      selectedElements.push(element);
+      continue;
     }
-    return null;
-  });
+  }
 
   if (opts?.includeElementsInFrames) {
     const elementsToInclude: ExcalidrawElement[] = [];
@@ -205,7 +210,7 @@ export const getSelectedElements = (
 };
 
 export const getTargetElements = (
-  elements: readonly NonDeletedExcalidrawElement[],
+  elements: ElementsMapOrArray,
   appState: Pick<AppState, "selectedElementIds" | "editingElement">,
 ) =>
   appState.editingElement

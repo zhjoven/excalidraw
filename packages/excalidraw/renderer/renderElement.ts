@@ -6,6 +6,8 @@ import {
   ExcalidrawImageElement,
   ExcalidrawTextElementWithContainer,
   ExcalidrawFrameLikeElement,
+  NonDeletedSceneElementsMap,
+  ElementsMap,
 } from "../element/types";
 import {
   isTextElement,
@@ -21,7 +23,11 @@ import type { RoughCanvas } from "roughjs/bin/canvas";
 import type { Drawable } from "roughjs/bin/core";
 import type { RoughSVG } from "roughjs/bin/svg";
 
-import { SVGRenderConfig, StaticCanvasRenderConfig } from "../scene/types";
+import {
+  SVGRenderConfig,
+  StaticCanvasRenderConfig,
+  RenderableElementsMap,
+} from "../scene/types";
 import {
   distance,
   getFontString,
@@ -132,6 +138,7 @@ export interface ExcalidrawElementWithCanvas {
 
 const cappedElementCanvasSize = (
   element: NonDeletedExcalidrawElement,
+  elementsMap: ElementsMap,
   zoom: Zoom,
 ): {
   width: number;
@@ -150,7 +157,7 @@ const cappedElementCanvasSize = (
 
   const padding = getCanvasPadding(element);
 
-  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element, elementsMap);
   const elementWidth =
     isLinearElement(element) || isFreeDrawElement(element)
       ? distance(x1, x2)
@@ -186,6 +193,7 @@ const cappedElementCanvasSize = (
 
 const generateElementCanvas = (
   element: NonDeletedExcalidrawElement,
+  elementsMap: RenderableElementsMap,
   zoom: Zoom,
   renderConfig: StaticCanvasRenderConfig,
   appState: StaticCanvasAppState,
@@ -194,7 +202,11 @@ const generateElementCanvas = (
   const context = canvas.getContext("2d")!;
   const padding = getCanvasPadding(element);
 
-  const { width, height, scale } = cappedElementCanvasSize(element, zoom);
+  const { width, height, scale } = cappedElementCanvasSize(
+    element,
+    elementsMap,
+    zoom,
+  );
 
   canvas.width = width;
   canvas.height = height;
@@ -203,7 +215,7 @@ const generateElementCanvas = (
   let canvasOffsetY = 0;
 
   if (isLinearElement(element) || isFreeDrawElement(element)) {
-    const [x1, y1] = getElementAbsoluteCoords(element);
+    const [x1, y1] = getElementAbsoluteCoords(element, elementsMap);
 
     canvasOffsetX =
       element.x > x1
@@ -243,7 +255,8 @@ const generateElementCanvas = (
     zoomValue: zoom.value,
     canvasOffsetX,
     canvasOffsetY,
-    boundTextElementVersion: getBoundTextElement(element)?.version || null,
+    boundTextElementVersion:
+      getBoundTextElement(element, elementsMap)?.version || null,
     containingFrameOpacity: getContainingFrame(element)?.opacity || 100,
   };
 };
@@ -337,6 +350,17 @@ const drawElementOnCanvas = (
         ? renderConfig.imageCache.get(element.fileId)?.image
         : undefined;
       if (img != null && !(img instanceof Promise)) {
+        if (element.roundness && context.roundRect) {
+          context.beginPath();
+          context.roundRect(
+            0,
+            0,
+            element.width,
+            element.height,
+            getCornerRadius(Math.min(element.width, element.height), element),
+          );
+          context.clip();
+        }
         context.drawImage(
           img,
           0 /* hardcoded for the selection box*/,
@@ -403,6 +427,7 @@ export const elementWithCanvasCache = new WeakMap<
 
 const generateElementWithCanvas = (
   element: NonDeletedExcalidrawElement,
+  elementsMap: RenderableElementsMap,
   renderConfig: StaticCanvasRenderConfig,
   appState: StaticCanvasAppState,
 ) => {
@@ -412,7 +437,9 @@ const generateElementWithCanvas = (
     prevElementWithCanvas &&
     prevElementWithCanvas.zoomValue !== zoom.value &&
     !appState?.shouldCacheIgnoreZoom;
-  const boundTextElementVersion = getBoundTextElement(element)?.version || null;
+  const boundTextElementVersion =
+    getBoundTextElement(element, elementsMap)?.version || null;
+
   const containingFrameOpacity = getContainingFrame(element)?.opacity || 100;
 
   if (
@@ -424,6 +451,7 @@ const generateElementWithCanvas = (
   ) {
     const elementWithCanvas = generateElementCanvas(
       element,
+      elementsMap,
       zoom,
       renderConfig,
       appState,
@@ -441,11 +469,12 @@ const drawElementFromCanvas = (
   context: CanvasRenderingContext2D,
   renderConfig: StaticCanvasRenderConfig,
   appState: StaticCanvasAppState,
+  allElementsMap: NonDeletedSceneElementsMap,
 ) => {
   const element = elementWithCanvas.element;
   const padding = getCanvasPadding(element);
   const zoom = elementWithCanvas.scale;
-  let [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+  let [x1, y1, x2, y2] = getElementAbsoluteCoords(element, allElementsMap);
 
   // Free draw elements will otherwise "shuffle" as the min x and y change
   if (isFreeDrawElement(element)) {
@@ -460,7 +489,8 @@ const drawElementFromCanvas = (
 
   context.save();
   context.scale(1 / window.devicePixelRatio, 1 / window.devicePixelRatio);
-  const boundTextElement = getBoundTextElement(element);
+
+  const boundTextElement = getBoundTextElement(element, allElementsMap);
 
   if (isArrowElement(element) && boundTextElement) {
     const tempCanvas = document.createElement("canvas");
@@ -489,8 +519,10 @@ const drawElementFromCanvas = (
       elementWithCanvas.canvas.height,
     );
 
-    const [, , , , boundTextCx, boundTextCy] =
-      getElementAbsoluteCoords(boundTextElement);
+    const [, , , , boundTextCx, boundTextCy] = getElementAbsoluteCoords(
+      boundTextElement,
+      allElementsMap,
+    );
 
     tempCanvasContext.rotate(-element.angle);
 
@@ -507,7 +539,6 @@ const drawElementFromCanvas = (
       offsetY -
       padding * zoom;
     tempCanvasContext.translate(-shiftX, -shiftY);
-
     // Clear the bound text area
     tempCanvasContext.clearRect(
       -(boundTextElement.width / 2 + BOUND_TEXT_PADDING) *
@@ -569,6 +600,7 @@ const drawElementFromCanvas = (
     ) {
       const textElement = getBoundTextElement(
         element,
+        allElementsMap,
       ) as ExcalidrawTextElementWithContainer;
       const coords = getContainerCoords(element);
       context.strokeStyle = "#c92a2a";
@@ -576,7 +608,7 @@ const drawElementFromCanvas = (
       context.strokeRect(
         (coords.x + appState.scrollX) * window.devicePixelRatio,
         (coords.y + appState.scrollY) * window.devicePixelRatio,
-        getBoundTextMaxWidth(element) * window.devicePixelRatio,
+        getBoundTextMaxWidth(element, textElement) * window.devicePixelRatio,
         getBoundTextMaxHeight(element, textElement) * window.devicePixelRatio,
       );
     }
@@ -611,6 +643,8 @@ export const renderSelectionElement = (
 
 export const renderElement = (
   element: NonDeletedExcalidrawElement,
+  elementsMap: RenderableElementsMap,
+  allElementsMap: NonDeletedSceneElementsMap,
   rc: RoughCanvas,
   context: CanvasRenderingContext2D,
   renderConfig: StaticCanvasRenderConfig,
@@ -668,7 +702,7 @@ export const renderElement = (
       ShapeCache.generateElementShape(element, null);
 
       if (renderConfig.isExporting) {
-        const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+        const [x1, y1, x2, y2] = getElementAbsoluteCoords(element, elementsMap);
         const cx = (x1 + x2) / 2 + appState.scrollX;
         const cy = (y1 + y2) / 2 + appState.scrollY;
         const shiftX = (x2 - x1) / 2 - (element.x - x1);
@@ -682,6 +716,7 @@ export const renderElement = (
       } else {
         const elementWithCanvas = generateElementWithCanvas(
           element,
+          elementsMap,
           renderConfig,
           appState,
         );
@@ -690,6 +725,7 @@ export const renderElement = (
           context,
           renderConfig,
           appState,
+          allElementsMap,
         );
       }
 
@@ -709,18 +745,19 @@ export const renderElement = (
       // rely on existing shapes
       ShapeCache.generateElementShape(element, renderConfig);
       if (renderConfig.isExporting) {
-        const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+        const [x1, y1, x2, y2] = getElementAbsoluteCoords(element, elementsMap);
         const cx = (x1 + x2) / 2 + appState.scrollX;
         const cy = (y1 + y2) / 2 + appState.scrollY;
         let shiftX = (x2 - x1) / 2 - (element.x - x1);
         let shiftY = (y2 - y1) / 2 - (element.y - y1);
         if (isTextElement(element)) {
-          const container = getContainerElement(element);
+          const container = getContainerElement(element, elementsMap);
           if (isArrowElement(container)) {
             const boundTextCoords =
               LinearElementEditor.getBoundTextElementPosition(
                 container,
                 element as ExcalidrawTextElementWithContainer,
+                elementsMap,
               );
             shiftX = (x2 - x1) / 2 - (boundTextCoords.x - x1);
             shiftY = (y2 - y1) / 2 - (boundTextCoords.y - y1);
@@ -732,7 +769,7 @@ export const renderElement = (
         if (shouldResetImageFilter(element, renderConfig, appState)) {
           context.filter = "none";
         }
-        const boundTextElement = getBoundTextElement(element);
+        const boundTextElement = getBoundTextElement(element, elementsMap);
 
         if (isArrowElement(element) && boundTextElement) {
           const tempCanvas = document.createElement("canvas");
@@ -776,8 +813,10 @@ export const renderElement = (
           tempCanvasContext.rotate(-element.angle);
 
           // Shift the canvas to center of bound text
-          const [, , , , boundTextCx, boundTextCy] =
-            getElementAbsoluteCoords(boundTextElement);
+          const [, , , , boundTextCx, boundTextCy] = getElementAbsoluteCoords(
+            boundTextElement,
+            elementsMap,
+          );
           const boundTextShiftX = (x1 + x2) / 2 - boundTextCx;
           const boundTextShiftY = (y1 + y2) / 2 - boundTextCy;
           tempCanvasContext.translate(-boundTextShiftX, -boundTextShiftY);
@@ -815,6 +854,7 @@ export const renderElement = (
       } else {
         const elementWithCanvas = generateElementWithCanvas(
           element,
+          elementsMap,
           renderConfig,
           appState,
         );
@@ -846,6 +886,7 @@ export const renderElement = (
           context,
           renderConfig,
           appState,
+          allElementsMap,
         );
 
         // reset
@@ -900,6 +941,7 @@ const maybeWrapNodesInFrameClipPath = (
 
 export const renderElementToSvg = (
   element: NonDeletedExcalidrawElement,
+  elementsMap: RenderableElementsMap,
   rsvg: RoughSVG,
   svgRoot: SVGElement,
   files: BinaryFiles,
@@ -908,17 +950,18 @@ export const renderElementToSvg = (
   renderConfig: SVGRenderConfig,
 ) => {
   const offset = { x: offsetX, y: offsetY };
-  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element);
+  const [x1, y1, x2, y2] = getElementAbsoluteCoords(element, elementsMap);
   let cx = (x2 - x1) / 2 - (element.x - x1);
   let cy = (y2 - y1) / 2 - (element.y - y1);
   if (isTextElement(element)) {
-    const container = getContainerElement(element);
+    const container = getContainerElement(element, elementsMap);
     if (isArrowElement(container)) {
-      const [x1, y1, x2, y2] = getElementAbsoluteCoords(container);
+      const [x1, y1, x2, y2] = getElementAbsoluteCoords(container, elementsMap);
 
       const boundTextCoords = LinearElementEditor.getBoundTextElementPosition(
         container,
         element as ExcalidrawTextElementWithContainer,
+        elementsMap,
       );
       cx = (x2 - x1) / 2 - (boundTextCoords.x - x1);
       cy = (y2 - y1) / 2 - (boundTextCoords.y - y1);
@@ -1013,6 +1056,7 @@ export const renderElementToSvg = (
         createPlaceholderEmbeddableLabel(element);
       renderElementToSvg(
         label,
+        elementsMap,
         rsvg,
         root,
         files,
@@ -1089,7 +1133,7 @@ export const renderElementToSvg = (
     }
     case "line":
     case "arrow": {
-      const boundText = getBoundTextElement(element);
+      const boundText = getBoundTextElement(element, elementsMap);
       const maskPath = svgRoot.ownerDocument!.createElementNS(SVG_NS, "mask");
       if (boundText) {
         maskPath.setAttribute("id", `mask-${element.id}`);
@@ -1119,6 +1163,7 @@ export const renderElementToSvg = (
         const boundTextCoords = LinearElementEditor.getBoundTextElementPosition(
           element,
           boundText,
+          elementsMap,
         );
 
         const maskX = offsetX + boundTextCoords.x - element.x;
@@ -1279,6 +1324,31 @@ export const renderElementToSvg = (
             offsetY || 0
           }) rotate(${degree} ${cx} ${cy})`,
         );
+
+        if (element.roundness) {
+          const clipPath = svgRoot.ownerDocument!.createElementNS(
+            SVG_NS,
+            "clipPath",
+          );
+          clipPath.id = `image-clipPath-${element.id}`;
+
+          const clipRect = svgRoot.ownerDocument!.createElementNS(
+            SVG_NS,
+            "rect",
+          );
+          const radius = getCornerRadius(
+            Math.min(element.width, element.height),
+            element,
+          );
+          clipRect.setAttribute("width", `${element.width}`);
+          clipRect.setAttribute("height", `${element.height}`);
+          clipRect.setAttribute("rx", `${radius}`);
+          clipRect.setAttribute("ry", `${radius}`);
+          clipPath.appendChild(clipRect);
+          addToRoot(clipPath, element);
+
+          g.setAttributeNS(SVG_NS, "clip-path", `url(#${clipPath.id})`);
+        }
 
         const clipG = maybeWrapNodesInFrameClipPath(
           element,

@@ -4,6 +4,7 @@ import {
   ExcalidrawFrameLikeElement,
   ExcalidrawTextElement,
   NonDeletedExcalidrawElement,
+  NonDeletedSceneElementsMap,
 } from "../element/types";
 import {
   Bounds,
@@ -11,7 +12,13 @@ import {
   getElementAbsoluteCoords,
 } from "../element/bounds";
 import { renderSceneToSvg, renderStaticScene } from "../renderer/renderScene";
-import { cloneJSON, distance, getFontString } from "../utils";
+import {
+  arrayToMap,
+  cloneJSON,
+  distance,
+  getFontString,
+  toBrandedType,
+} from "../utils";
 import { AppState, BinaryFiles } from "../types";
 import {
   DEFAULT_EXPORT_PADDING,
@@ -26,8 +33,8 @@ import {
   getInitializedImageElements,
   updateImageCache,
 } from "../element/image";
-import { elementsOverlappingBBox } from "../../utils/export";
 import {
+  getElementsOverlappingFrame,
   getFrameLikeElements,
   getFrameLikeTitle,
   getRootElements,
@@ -37,6 +44,7 @@ import { Mutable } from "../utility-types";
 import { newElementWith } from "../element/mutateElement";
 import Scene from "./Scene";
 import { isFrameElement, isFrameLikeElement } from "../element/typeChecks";
+import { RenderableElementsMap } from "./types";
 
 const SVG_EXPORT_TAG = `<!-- svg-source:excalidraw -->`;
 
@@ -168,11 +176,7 @@ const prepareElementsForRender = ({
   let nextElements: readonly ExcalidrawElement[];
 
   if (exportingFrame) {
-    nextElements = elementsOverlappingBBox({
-      elements,
-      bounds: exportingFrame,
-      type: "overlap",
-    });
+    nextElements = getElementsOverlappingFrame(elements, exportingFrame);
   } else if (frameRendering.enabled && frameRendering.name) {
     nextElements = addFrameLabelsAsTextElements(elements, {
       exportWithDarkMode,
@@ -248,7 +252,12 @@ export const exportToCanvas = async (
   renderStaticScene({
     canvas,
     rc: rough.canvas(canvas),
-    elements: elementsForRender,
+    elementsMap: toBrandedType<RenderableElementsMap>(
+      arrayToMap(elementsForRender),
+    ),
+    allElementsMap: toBrandedType<NonDeletedSceneElementsMap>(
+      arrayToMap(elements),
+    ),
     visibleElements: elementsForRender,
     scale,
     appState: {
@@ -383,8 +392,9 @@ export const exportToSvg = async (
   const frameElements = getFrameLikeElements(elements);
 
   let exportingFrameClipPath = "";
+  const elementsMap = arrayToMap(elements);
   for (const frame of frameElements) {
-    const [x1, y1, x2, y2] = getElementAbsoluteCoords(frame);
+    const [x1, y1, x2, y2] = getElementAbsoluteCoords(frame, elementsMap);
     const cx = (x2 - x1) / 2 - (frame.x - x1);
     const cy = (y2 - y1) / 2 - (frame.y - y1);
 
@@ -436,22 +446,29 @@ export const exportToSvg = async (
 
   const renderEmbeddables = opts?.renderEmbeddables ?? false;
 
-  renderSceneToSvg(elementsForRender, rsvg, svgRoot, files || {}, {
-    offsetX,
-    offsetY,
-    isExporting: true,
-    exportWithDarkMode,
-    renderEmbeddables,
-    frameRendering,
-    canvasBackgroundColor: viewBackgroundColor,
-    embedsValidationStatus: renderEmbeddables
-      ? new Map(
-          elementsForRender
-            .filter((element) => isFrameLikeElement(element))
-            .map((element) => [element.id, true]),
-        )
-      : new Map(),
-  });
+  renderSceneToSvg(
+    elementsForRender,
+    toBrandedType<RenderableElementsMap>(arrayToMap(elementsForRender)),
+    rsvg,
+    svgRoot,
+    files || {},
+    {
+      offsetX,
+      offsetY,
+      isExporting: true,
+      exportWithDarkMode,
+      renderEmbeddables,
+      frameRendering,
+      canvasBackgroundColor: viewBackgroundColor,
+      embedsValidationStatus: renderEmbeddables
+        ? new Map(
+            elementsForRender
+              .filter((element) => isFrameLikeElement(element))
+              .map((element) => [element.id, true]),
+          )
+        : new Map(),
+    },
+  );
 
   tempScene.destroy();
 

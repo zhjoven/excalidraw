@@ -195,6 +195,7 @@ const LayerUI = ({
         actionManager={actionManager}
         onExportImage={onExportImage}
         onCloseRequest={() => setAppState({ openDialog: null })}
+        name={app.getName()}
       />
     );
   };
@@ -226,7 +227,7 @@ const LayerUI = ({
       >
         <SelectedShapeActions
           appState={appState}
-          elements={elements}
+          elementsMap={app.scene.getNonDeletedElementsMap()}
           renderAction={actionManager.renderAction}
         />
       </Island>

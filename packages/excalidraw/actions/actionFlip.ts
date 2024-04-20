@@ -7,7 +7,7 @@ import {
   NonDeletedSceneElementsMap,
 } from "../element/types";
 import { resizeMultipleElements } from "../element/resizeElements";
-import { AppState } from "../types";
+import { AppClassProperties, AppState } from "../types";
 import { arrayToMap } from "../utils";
 import { CODES, KEYS } from "../keys";
 import { getCommonBoundingBox } from "../element/bounds";
@@ -17,9 +17,13 @@ import {
   unbindLinearElements,
 } from "../element/binding";
 import { updateFrameMembershipOfSelectedElements } from "../frame";
+import { flipHorizontal, flipVertical } from "../components/icons";
+import { StoreAction } from "../store";
 
 export const actionFlipHorizontal = register({
   name: "flipHorizontal",
+  label: "labels.flipHorizontal",
+  icon: flipHorizontal,
   trackEvent: { category: "element" },
   perform: (elements, appState, _, app) => {
     return {
@@ -29,20 +33,22 @@ export const actionFlipHorizontal = register({
           app.scene.getNonDeletedElementsMap(),
           appState,
           "horizontal",
+          app,
         ),
         appState,
         app,
       ),
       appState,
-      commitToHistory: true,
+      storeAction: StoreAction.CAPTURE,
     };
   },
   keyTest: (event) => event.shiftKey && event.code === CODES.H,
-  contextItemLabel: "labels.flipHorizontal",
 });
 
 export const actionFlipVertical = register({
   name: "flipVertical",
+  label: "labels.flipVertical",
+  icon: flipVertical,
   trackEvent: { category: "element" },
   perform: (elements, appState, _, app) => {
     return {
@@ -52,17 +58,17 @@ export const actionFlipVertical = register({
           app.scene.getNonDeletedElementsMap(),
           appState,
           "vertical",
+          app,
         ),
         appState,
         app,
       ),
       appState,
-      commitToHistory: true,
+      storeAction: StoreAction.CAPTURE,
     };
   },
   keyTest: (event) =>
     event.shiftKey && event.code === CODES.V && !event[KEYS.CTRL_OR_CMD],
-  contextItemLabel: "labels.flipVertical",
 });
 
 const flipSelectedElements = (
@@ -70,6 +76,7 @@ const flipSelectedElements = (
   elementsMap: NonDeletedSceneElementsMap,
   appState: Readonly<AppState>,
   flipDirection: "horizontal" | "vertical",
+  app: AppClassProperties,
 ) => {
   const selectedElements = getSelectedElements(
     getNonDeletedElements(elements),
@@ -86,6 +93,7 @@ const flipSelectedElements = (
     elementsMap,
     appState,
     flipDirection,
+    app,
   );
 
   const updatedElementsMap = arrayToMap(updatedElements);
@@ -101,6 +109,7 @@ const flipElements = (
   elementsMap: NonDeletedSceneElementsMap,
   appState: AppState,
   flipDirection: "horizontal" | "vertical",
+  app: AppClassProperties,
 ): ExcalidrawElement[] => {
   const { minX, minY, maxX, maxY } = getCommonBoundingBox(selectedElements);
 
@@ -115,7 +124,7 @@ const flipElements = (
   );
 
   isBindingEnabled(appState)
-    ? bindOrUnbindSelectedElements(selectedElements, elements, elementsMap)
+    ? bindOrUnbindSelectedElements(selectedElements, app)
     : unbindLinearElements(selectedElements, elementsMap);
 
   return selectedElements;
